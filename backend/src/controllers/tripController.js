@@ -5,6 +5,20 @@
 
 const { pool } = require('../config/db');
 
+function formatTrip(row) {
+    if (!row) return row;
+    return {
+        ...row,
+        id: row.trip_id,
+        bus: row.bus_number,
+        driver: row.driver_name,
+        route: row.route_name,
+        date: row.trip_date,
+        startTime: row.start_time ? row.start_time.substring(0, 5) : '',
+        endTime: row.end_time ? row.end_time.substring(0, 5) : ''
+    };
+}
+
 /**
  * GET /api/trips
  * Retrieve scheduled/in-progress/completed trips with joined Bus, Driver, and Route details
@@ -72,7 +86,7 @@ async function getAllTrips(req, res, next) {
         res.status(200).json({
             success: true,
             message: 'Trips retrieved successfully.',
-            data: rows
+            data: rows.map(formatTrip)
         });
     } catch (error) {
         next(error);
@@ -123,7 +137,6 @@ async function getTripById(req, res, next) {
             return res.status(404).json({ success: false, message: `Trip with ID ${tripId} not found.` });
         }
 
-        // Fetch recent passenger snapshot count & active incidents for quick trip overview
         const [passengerStats] = await pool.query(
             'SELECT COUNT(*) AS total_records, MAX(passenger_count) AS max_passenger_count FROM Passenger_Record WHERE trip_id = ?',
             [tripId]
@@ -134,22 +147,20 @@ async function getTripById(req, res, next) {
             [tripId]
         );
 
-        const tripData = {
-            ...rows[0],
-            passenger_metrics: {
-                total_records: passengerStats[0].total_records,
-                max_passenger_count: passengerStats[0].max_passenger_count || 0
-            },
-            incident_metrics: {
-                total_incidents: incidentStats[0].total_incidents,
-                active_incidents: Number(incidentStats[0].active_incidents) || 0
-            }
+        const formatted = formatTrip(rows[0]);
+        formatted.passenger_metrics = {
+            total_records: passengerStats[0].total_records,
+            max_passenger_count: passengerStats[0].max_passenger_count || 0
+        };
+        formatted.incident_metrics = {
+            total_incidents: incidentStats[0].total_incidents,
+            active_incidents: Number(incidentStats[0].active_incidents) || 0
         };
 
         res.status(200).json({
             success: true,
             message: 'Trip details retrieved successfully.',
-            data: tripData
+            data: formatted
         });
     } catch (error) {
         next(error);
@@ -162,33 +173,59 @@ async function getTripById(req, res, next) {
  */
 async function createTrip(req, res, next) {
     try {
-        const { bus_id, driver_id, route_id, trip_date, start_time, end_time, status = 'Scheduled' } = req.body;
+        let bus_id = req.body.bus_id;
+        let driver_id = req.body.driver_id;
+        let route_id = req.body.route_id;
+        const trip_date = req.body.trip_date || req.body.date;
+        let start_time = req.body.start_time || req.body.startTime;
+        let end_time = req.body.end_time || req.body.endTime;
+        const status = req.body.status || 'Scheduled';
 
-        // Validation
+        // Resolve bus if string like 'KA-19-1234'
+        if (!bus_id && req.body.bus) {
+            const [b] = await pool.query('SELECT bus_id FROM Bus WHERE bus_number = ? OR bus_id = ?', [req.body.bus, req.body.bus]);
+            if (b.length > 0) bus_id = b[0].bus_id;
+        }
+
+        // Resolve driver if name like 'Rahul Kumar'
+        if (!driver_id && req.body.driver) {
+            const [d] = await pool.query('SELECT driver_id FROM Driver WHERE name = ? OR driver_id = ?', [req.body.driver, req.body.driver]);
+            if (d.length > 0) driver_id = d[0].driver_id;
+        }
+
+        // Resolve route if name like 'Mangalore - Udupi'
+        if (!route_id && req.body.route) {
+            const [r] = await pool.query('SELECT route_id FROM Route WHERE route_name = ? OR route_id = ?', [req.body.route, req.body.route]);
+            if (r.length > 0) route_id = r[0].route_id;
+        }
+
         const numBusId = Number(bus_id);
         const numDriverId = Number(driver_id);
         const numRouteId = Number(route_id);
 
         if (!numBusId || numBusId <= 0) {
-            return res.status(400).json({ success: false, message: 'Validation error: valid bus_id is required.' });
+            return res.status(400).json({ success: false, message: 'Validation error: valid bus is required.' });
         }
         if (!numDriverId || numDriverId <= 0) {
-            return res.status(400).json({ success: false, message: 'Validation error: valid driver_id is required.' });
+            return res.status(400).json({ success: false, message: 'Validation error: valid driver is required.' });
         }
         if (!numRouteId || numRouteId <= 0) {
-            return res.status(400).json({ success: false, message: 'Validation error: valid route_id is required.' });
+            return res.status(400).json({ success: false, message: 'Validation error: valid route is required.' });
         }
         if (!trip_date || !/^\d{4}-\d{2}-\d{2}$/.test(trip_date)) {
-            return res.status(400).json({ success: false, message: 'Validation error: trip_date in YYYY-MM-DD format is required.' });
+            return res.status(400).json({ success: false, message: 'Validation error: valid trip_date in YYYY-MM-DD format is required.' });
         }
         if (!start_time) {
             return res.status(400).json({ success: false, message: 'Validation error: start_time is required.' });
         }
+        if (start_time.length === 5) start_time += ':00';
+        if (end_time && end_time.length === 5) end_time += ':00';
+
         if (end_time && end_time <= start_time) {
             return res.status(400).json({ success: false, message: 'Validation error: end_time must be later than start_time.' });
         }
 
-        const allowedStatuses = ['Scheduled', 'In Progress', 'Completed', 'Cancelled'];
+        const allowedStatuses = ['Scheduled', 'In Progress', 'Ongoing', 'Completed', 'Cancelled'];
         if (!allowedStatuses.includes(status)) {
             return res.status(400).json({ success: false, message: `Validation error: status must be one of [${allowedStatuses.join(', ')}].` });
         }
@@ -223,8 +260,7 @@ async function createTrip(req, res, next) {
             return res.status(404).json({ success: false, message: `Route with ID ${numRouteId} does not exist.` });
         }
 
-        // Simple scheduling conflict check:
-        // Ensure neither the bus nor driver is already scheduled on an overlapping trip on the same date/start_time
+        // Check for trip conflict
         const [conflictCheck] = await pool.query(`
             SELECT trip_id, bus_id, driver_id, start_time, end_time 
             FROM Trip 
@@ -232,9 +268,7 @@ async function createTrip(req, res, next) {
               AND status != 'Cancelled'
               AND (bus_id = ? OR driver_id = ?)
               AND (
-                -- Direct start_time collision
                 start_time = ?
-                -- Or overlapping time slot when end_time is known
                 OR (? IS NOT NULL AND end_time IS NOT NULL AND start_time < ? AND end_time > ?)
               )
         `, [trip_date, numBusId, numDriverId, start_time, end_time, end_time, start_time]);
@@ -256,7 +290,6 @@ async function createTrip(req, res, next) {
 
         const newTripId = result.insertId;
 
-        // Fetch inserted trip with joined attributes
         const [createdTrip] = await pool.query(`
             SELECT 
                 t.trip_id, t.bus_id, b.bus_number, b.capacity AS bus_capacity, b.bus_type,
@@ -273,7 +306,7 @@ async function createTrip(req, res, next) {
         res.status(201).json({
             success: true,
             message: 'Trip scheduled successfully.',
-            data: createdTrip[0]
+            data: formatTrip(createdTrip[0])
         });
     } catch (error) {
         next(error);
@@ -296,54 +329,59 @@ async function updateTrip(req, res, next) {
             return res.status(404).json({ success: false, message: `Trip with ID ${tripId} not found.` });
         }
 
-        const { bus_id, driver_id, route_id, trip_date, start_time, end_time, status } = req.body;
+        let bus_id = req.body.bus_id;
+        let driver_id = req.body.driver_id;
+        let route_id = req.body.route_id;
+        const trip_date = req.body.trip_date || req.body.date;
+        let start_time = req.body.start_time || req.body.startTime;
+        let end_time = req.body.end_time || req.body.endTime;
+        const status = req.body.status;
+
+        if (!bus_id && req.body.bus) {
+            const [b] = await pool.query('SELECT bus_id FROM Bus WHERE bus_number = ? OR bus_id = ?', [req.body.bus, req.body.bus]);
+            if (b.length > 0) bus_id = b[0].bus_id;
+        }
+
+        if (!driver_id && req.body.driver) {
+            const [d] = await pool.query('SELECT driver_id FROM Driver WHERE name = ? OR driver_id = ?', [req.body.driver, req.body.driver]);
+            if (d.length > 0) driver_id = d[0].driver_id;
+        }
+
+        if (!route_id && req.body.route) {
+            const [r] = await pool.query('SELECT route_id FROM Route WHERE route_name = ? OR route_id = ?', [req.body.route, req.body.route]);
+            if (r.length > 0) route_id = r[0].route_id;
+        }
+
         const updates = [];
         const params = [];
 
         if (bus_id !== undefined) {
-            const numBus = Number(bus_id);
-            if (!numBus || numBus <= 0) return res.status(400).json({ success: false, message: 'Invalid bus_id.' });
             updates.push('bus_id = ?');
-            params.push(numBus);
+            params.push(Number(bus_id));
         }
-
         if (driver_id !== undefined) {
-            const numDriver = Number(driver_id);
-            if (!numDriver || numDriver <= 0) return res.status(400).json({ success: false, message: 'Invalid driver_id.' });
             updates.push('driver_id = ?');
-            params.push(numDriver);
+            params.push(Number(driver_id));
         }
-
         if (route_id !== undefined) {
-            const numRoute = Number(route_id);
-            if (!numRoute || numRoute <= 0) return res.status(400).json({ success: false, message: 'Invalid route_id.' });
             updates.push('route_id = ?');
-            params.push(numRoute);
+            params.push(Number(route_id));
         }
-
         if (trip_date !== undefined) {
-            if (!/^\d{4}-\d{2}-\d{2}$/.test(trip_date)) {
-                return res.status(400).json({ success: false, message: 'trip_date must be in YYYY-MM-DD format.' });
-            }
             updates.push('trip_date = ?');
             params.push(trip_date);
         }
-
         if (start_time !== undefined) {
+            if (start_time.length === 5) start_time += ':00';
             updates.push('start_time = ?');
             params.push(start_time);
         }
-
         if (end_time !== undefined) {
+            if (end_time && end_time.length === 5) end_time += ':00';
             updates.push('end_time = ?');
             params.push(end_time || null);
         }
-
         if (status !== undefined) {
-            const allowedStatuses = ['Scheduled', 'In Progress', 'Completed', 'Cancelled'];
-            if (!allowedStatuses.includes(status)) {
-                return res.status(400).json({ success: false, message: `status must be one of [${allowedStatuses.join(', ')}].` });
-            }
             updates.push('status = ?');
             params.push(status);
         }
@@ -355,7 +393,6 @@ async function updateTrip(req, res, next) {
         params.push(tripId);
         await pool.query(`UPDATE Trip SET ${updates.join(', ')} WHERE trip_id = ?`, params);
 
-        // Fetch updated
         const [updated] = await pool.query(`
             SELECT 
                 t.trip_id, t.bus_id, b.bus_number, b.capacity AS bus_capacity, b.bus_type,
@@ -372,7 +409,7 @@ async function updateTrip(req, res, next) {
         res.status(200).json({
             success: true,
             message: 'Trip updated successfully.',
-            data: updated[0]
+            data: formatTrip(updated[0])
         });
     } catch (error) {
         next(error);
@@ -395,7 +432,6 @@ async function deleteTrip(req, res, next) {
             return res.status(404).json({ success: false, message: `Trip with ID ${tripId} not found.` });
         }
 
-        // Check passenger records
         const [pCheck] = await pool.query('SELECT COUNT(*) AS count FROM Passenger_Record WHERE trip_id = ?', [tripId]);
         if (pCheck[0].count > 0) {
             return res.status(409).json({
@@ -404,7 +440,6 @@ async function deleteTrip(req, res, next) {
             });
         }
 
-        // Check safety incidents
         const [iCheck] = await pool.query('SELECT COUNT(*) AS count FROM Safety_Incident WHERE trip_id = ?', [tripId]);
         if (iCheck[0].count > 0) {
             return res.status(409).json({

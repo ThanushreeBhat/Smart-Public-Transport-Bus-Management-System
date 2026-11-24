@@ -5,6 +5,19 @@
 
 const { pool } = require('../config/db');
 
+const ALLOWED_BUS_TYPES = ['Ordinary', 'Express', 'AC', 'Electric', 'Standard', 'Mini Bus'];
+const ALLOWED_BUS_STATUSES = ['Active', 'Maintenance', 'Inactive'];
+
+function formatBus(row) {
+    if (!row) return row;
+    return {
+        ...row,
+        id: row.bus_id,
+        number: row.bus_number,
+        type: row.bus_type
+    };
+}
+
 /**
  * GET /api/buses
  * Retrieve all buses with optional status and bus_type filtering
@@ -34,7 +47,7 @@ async function getAllBuses(req, res, next) {
         res.status(200).json({
             success: true,
             message: 'Buses retrieved successfully.',
-            data: rows
+            data: rows.map(formatBus)
         });
     } catch (error) {
         next(error);
@@ -70,7 +83,7 @@ async function getBusById(req, res, next) {
         res.status(200).json({
             success: true,
             message: 'Bus details retrieved successfully.',
-            data: rows[0]
+            data: formatBus(rows[0])
         });
     } catch (error) {
         next(error);
@@ -83,7 +96,10 @@ async function getBusById(req, res, next) {
  */
 async function createBus(req, res, next) {
     try {
-        const { bus_number, capacity, bus_type, status = 'Active' } = req.body;
+        const bus_number = req.body.bus_number || req.body.number;
+        const capacity = req.body.capacity;
+        const bus_type = req.body.bus_type || req.body.type || 'Standard';
+        const status = req.body.status || 'Active';
 
         // Validation
         if (!bus_number || typeof bus_number !== 'string' || bus_number.trim() === '') {
@@ -101,19 +117,17 @@ async function createBus(req, res, next) {
             });
         }
 
-        const allowedTypes = ['Ordinary', 'Express', 'AC', 'Electric'];
-        if (!bus_type || !allowedTypes.includes(bus_type)) {
+        if (!ALLOWED_BUS_TYPES.includes(bus_type)) {
             return res.status(400).json({
                 success: false,
-                message: `Validation error: bus_type must be one of [${allowedTypes.join(', ')}].`
+                message: `Validation error: bus_type must be one of [${ALLOWED_BUS_TYPES.join(', ')}].`
             });
         }
 
-        const allowedStatuses = ['Active', 'Maintenance', 'Inactive'];
-        if (!allowedStatuses.includes(status)) {
+        if (!ALLOWED_BUS_STATUSES.includes(status)) {
             return res.status(400).json({
                 success: false,
-                message: `Validation error: status must be one of [${allowedStatuses.join(', ')}].`
+                message: `Validation error: status must be one of [${ALLOWED_BUS_STATUSES.join(', ')}].`
             });
         }
 
@@ -132,7 +146,7 @@ async function createBus(req, res, next) {
         res.status(201).json({
             success: true,
             message: 'Bus created successfully.',
-            data: createdRows[0]
+            data: formatBus(createdRows[0])
         });
     } catch (error) {
         next(error);
@@ -162,7 +176,11 @@ async function updateBus(req, res, next) {
             });
         }
 
-        const { bus_number, capacity, bus_type, status } = req.body;
+        const bus_number = req.body.bus_number !== undefined ? req.body.bus_number : req.body.number;
+        const capacity = req.body.capacity;
+        const bus_type = req.body.bus_type !== undefined ? req.body.bus_type : req.body.type;
+        const status = req.body.status;
+
         const updates = [];
         const params = [];
 
@@ -184,18 +202,16 @@ async function updateBus(req, res, next) {
         }
 
         if (bus_type !== undefined) {
-            const allowedTypes = ['Ordinary', 'Express', 'AC', 'Electric'];
-            if (!allowedTypes.includes(bus_type)) {
-                return res.status(400).json({ success: false, message: `bus_type must be one of [${allowedTypes.join(', ')}].` });
+            if (!ALLOWED_BUS_TYPES.includes(bus_type)) {
+                return res.status(400).json({ success: false, message: `bus_type must be one of [${ALLOWED_BUS_TYPES.join(', ')}].` });
             }
             updates.push('bus_type = ?');
             params.push(bus_type);
         }
 
         if (status !== undefined) {
-            const allowedStatuses = ['Active', 'Maintenance', 'Inactive'];
-            if (!allowedStatuses.includes(status)) {
-                return res.status(400).json({ success: false, message: `status must be one of [${allowedStatuses.join(', ')}].` });
+            if (!ALLOWED_BUS_STATUSES.includes(status)) {
+                return res.status(400).json({ success: false, message: `status must be one of [${ALLOWED_BUS_STATUSES.join(', ')}].` });
             }
             updates.push('status = ?');
             params.push(status);
@@ -219,7 +235,7 @@ async function updateBus(req, res, next) {
         res.status(200).json({
             success: true,
             message: 'Bus updated successfully.',
-            data: updatedRows[0]
+            data: formatBus(updatedRows[0])
         });
     } catch (error) {
         next(error);

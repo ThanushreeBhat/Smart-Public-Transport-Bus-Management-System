@@ -1,6 +1,6 @@
-
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Plus, Search, Trash2, MapPin, Pencil } from 'lucide-react'
+import { getRoutes, addRoute, updateRoute as apiUpdateRoute, deleteRoute as apiDeleteRoute } from '../services/routeService'
 
 function RoutesPage() {
   const [routes, setRoutes] = useState([
@@ -38,8 +38,24 @@ function RoutesPage() {
     stops: '',
   })
 
+  const loadRoutes = () => {
+    getRoutes()
+      .then((data) => {
+        if (Array.isArray(data) && data.length > 0) {
+          setRoutes(data)
+        }
+      })
+      .catch((err) => {
+        console.warn('Using local routes state:', err.message)
+      })
+  }
+
+  useEffect(() => {
+    loadRoutes()
+  }, [])
+
   const filteredRoutes = routes.filter((route) =>
-    `${route.name} ${route.source} ${route.destination} ${route.stops.join(' ')}`
+    `${route.name || route.route_name || ''} ${route.source || ''} ${route.destination || ''} ${(route.stops || []).join(' ')}`
       .toLowerCase()
       .includes(search.toLowerCase())
   )
@@ -50,7 +66,7 @@ function RoutesPage() {
     setShowForm(false)
   }
 
-  const saveRoute = (e) => {
+  const saveRoute = async (e) => {
     e.preventDefault()
 
     const name = form.name.trim()
@@ -60,28 +76,30 @@ function RoutesPage() {
       .split(',')
       .map((stop) => stop.trim())
       .filter(Boolean)
-      if (!name || !source || !destination) {
-  alert('Please fill in all route details.')
-  return
-}
 
-if (name.length < 3) {
-  alert('Route name must contain at least 3 characters.')
-  return
-}
+    if (!name || !source || !destination) {
+      alert('Please fill in all route details.')
+      return
+    }
+
+    if (name.length < 3) {
+      alert('Route name must contain at least 3 characters.')
+      return
+    }
 
     if (source.toLowerCase() === destination.toLowerCase()) {
       alert('Source and destination must be different.')
       return
     }
-    const uniqueStops = new Set(
-  stops.map((stop) => stop.toLowerCase())
-)
 
-if (uniqueStops.size !== stops.length) {
-  alert('Duplicate intermediate stops are not allowed.')
-  return
-}
+    const uniqueStops = new Set(
+      stops.map((stop) => stop.toLowerCase())
+    )
+
+    if (uniqueStops.size !== stops.length) {
+      alert('Duplicate intermediate stops are not allowed.')
+      return
+    }
 
     if (stops.length === 0) {
       alert('Please enter at least one intermediate stop.')
@@ -90,8 +108,8 @@ if (uniqueStops.size !== stops.length) {
 
     const duplicate = routes.some(
       (route) =>
-        route.id !== editingId &&
-        route.name.toLowerCase() === name.toLowerCase()
+        (route.id || route.route_id) !== editingId &&
+        (route.name || route.route_name || '').toLowerCase() === name.toLowerCase()
     )
 
     if (duplicate) {
@@ -101,17 +119,37 @@ if (uniqueStops.size !== stops.length) {
 
     const updatedRoute = { name, source, destination, stops }
 
-    if (editingId !== null) {
-      setRoutes((current) =>
-        current.map((route) =>
-          route.id === editingId ? { ...route, ...updatedRoute } : route
+    try {
+      if (editingId !== null) {
+        await apiUpdateRoute(editingId, {
+          route_name: name,
+          source,
+          destination,
+          stops
+        })
+      } else {
+        await addRoute({
+          route_name: name,
+          source,
+          destination,
+          stops
+        })
+      }
+      loadRoutes()
+    } catch (err) {
+      console.warn('API error saving route, updating local state:', err.message)
+      if (editingId !== null) {
+        setRoutes((current) =>
+          current.map((route) =>
+            (route.id || route.route_id) === editingId ? { ...route, ...updatedRoute } : route
+          )
         )
-      )
-    } else {
-      setRoutes((current) => [
-        ...current,
-        { id: Date.now(), ...updatedRoute },
-      ])
+      } else {
+        setRoutes((current) => [
+          ...current,
+          { id: Date.now(), ...updatedRoute },
+        ])
+      }
     }
 
     resetForm()
@@ -119,18 +157,25 @@ if (uniqueStops.size !== stops.length) {
 
   const editRoute = (route) => {
     setForm({
-      name: route.name,
-      source: route.source,
-      destination: route.destination,
-      stops: route.stops.join(', '),
+      name: route.name || route.route_name || '',
+      source: route.source || '',
+      destination: route.destination || '',
+      stops: (route.stops || []).join(', '),
     })
-    setEditingId(route.id)
+    setEditingId(route.id || route.route_id)
     setShowForm(true)
   }
 
-  const deleteRoute = (id) => {
+  const deleteRoute = async (id) => {
     if (window.confirm('Are you sure you want to delete this route?')) {
-      setRoutes((current) => current.filter((route) => route.id !== id))
+      try {
+        await apiDeleteRoute(id)
+        loadRoutes()
+      } catch (err) {
+        const msg = err.response?.data?.message || err.message
+        alert(`Delete failed: ${msg}`)
+        setRoutes((current) => current.filter((route) => (route.id || route.route_id) !== id))
+      }
       if (editingId === id) resetForm()
     }
   }
@@ -249,8 +294,8 @@ if (uniqueStops.size !== stops.length) {
 
             <tbody>
               {filteredRoutes.map((route) => (
-                <tr key={route.id} className="border-t text-sm">
-                  <td className="p-4 font-medium">{route.name}</td>
+                <tr key={route.id || route.route_id} className="border-t text-sm">
+                  <td className="p-4 font-medium">{route.name || route.route_name}</td>
                   <td className="p-4">
                     <span className="flex items-center gap-1">
                       <MapPin size={15} /> {route.source}
@@ -259,12 +304,12 @@ if (uniqueStops.size !== stops.length) {
                   <td className="p-4">{route.destination}</td>
                   <td className="p-4">
                     <div className="flex flex-wrap gap-1">
-                      {route.stops.map((stop, index) => (
+                      {(route.stops || []).map((stop, index) => (
                         <span
-                          key={`${route.id}-${index}`}
+                          key={`${route.id || route.route_id}-${index}`}
                           className="bg-slate-100 text-slate-700 px-2 py-1 rounded-md text-xs"
                         >
-                          {index + 1}. {stop}
+                          {index + 1}. {typeof stop === 'string' ? stop : (stop.stop_name || '')}
                         </span>
                       ))}
                     </div>
@@ -280,7 +325,7 @@ if (uniqueStops.size !== stops.length) {
                       </button>
 
                       <button
-                        onClick={() => deleteRoute(route.id)}
+                        onClick={() => deleteRoute(route.id || route.route_id)}
                         className="text-red-600"
                         title="Delete route"
                       >

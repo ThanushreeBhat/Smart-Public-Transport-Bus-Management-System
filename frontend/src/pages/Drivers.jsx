@@ -1,6 +1,6 @@
-
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Plus, Search, Pencil, Trash2 } from 'lucide-react'
+import { getDrivers, addDriver, updateDriver as apiUpdateDriver, deleteDriver as apiDeleteDriver } from '../services/driverService'
 
 function Drivers() {
   const [drivers, setDrivers] = useState([
@@ -19,8 +19,24 @@ function Drivers() {
     license: '',
   })
 
+  const loadDrivers = () => {
+    getDrivers()
+      .then((data) => {
+        if (Array.isArray(data) && data.length > 0) {
+          setDrivers(data)
+        }
+      })
+      .catch((err) => {
+        console.warn('Using local drivers state:', err.message)
+      })
+  }
+
+  useEffect(() => {
+    loadDrivers()
+  }, [])
+
   const filteredDrivers = drivers.filter((driver) =>
-    driver.name.toLowerCase().includes(search.toLowerCase())
+    (driver.name || '').toLowerCase().includes(search.toLowerCase())
   )
 
   const resetForm = () => {
@@ -29,29 +45,29 @@ function Drivers() {
     setShowForm(false)
   }
 
-  const saveDriver = (e) => {
+  const saveDriver = async (e) => {
     e.preventDefault()
     if (!form.name.trim()) {
-  alert('Please enter the driver name.')
-  return
-}
+      alert('Please enter the driver name.')
+      return
+    }
 
-if (!/^[0-9]{10}$/.test(form.phone.trim())) {
-  alert('Please enter a valid 10-digit phone number.')
-  return
-}
+    if (!/^[0-9+ -]{7,15}$/.test(form.phone.trim())) {
+      alert('Please enter a valid phone number.')
+      return
+    }
 
-if (!form.license.trim()) {
-  alert('Please enter the driving licence number.')
-  return
-}
+    if (!form.license.trim()) {
+      alert('Please enter the driving licence number.')
+      return
+    }
 
     const duplicate = drivers.some(
       (driver) =>
-        driver.id !== editingId &&
+        (driver.id || driver.driver_id) !== editingId &&
         (
-          driver.phone === form.phone ||
-          driver.license.toLowerCase() === form.license.trim().toLowerCase()
+          driver.phone === form.phone.trim() ||
+          (driver.license || driver.license_no || '').toLowerCase() === form.license.trim().toLowerCase()
         )
     )
 
@@ -60,23 +76,42 @@ if (!form.license.trim()) {
       return
     }
 
-    if (editingId !== null) {
-      setDrivers(drivers.map((driver) =>
-        driver.id === editingId
-          ? { ...driver, ...form, name: form.name.trim(), license: form.license.trim() }
-          : driver
-      ))
-    } else {
-      setDrivers([
-        ...drivers,
-        {
-          id: Date.now(),
-          ...form,
+    try {
+      if (editingId !== null) {
+        await apiUpdateDriver(editingId, {
           name: form.name.trim(),
-          license: form.license.trim(),
-          status: 'Active',
-        },
-      ])
+          phone: form.phone.trim(),
+          license_no: form.license.trim()
+        })
+      } else {
+        await addDriver({
+          name: form.name.trim(),
+          phone: form.phone.trim(),
+          license_no: form.license.trim(),
+          status: 'Active'
+        })
+      }
+      loadDrivers()
+    } catch (err) {
+      console.warn('API error during driver save, updating local state:', err.message)
+      if (editingId !== null) {
+        setDrivers(drivers.map((driver) =>
+          (driver.id || driver.driver_id) === editingId
+            ? { ...driver, ...form, name: form.name.trim(), license: form.license.trim() }
+            : driver
+        ))
+      } else {
+        setDrivers([
+          ...drivers,
+          {
+            id: Date.now(),
+            ...form,
+            name: form.name.trim(),
+            license: form.license.trim(),
+            status: 'Active',
+          },
+        ])
+      }
     }
 
     resetForm()
@@ -84,17 +119,24 @@ if (!form.license.trim()) {
 
   const editDriver = (driver) => {
     setForm({
-      name: driver.name,
-      phone: driver.phone,
-      license: driver.license,
+      name: driver.name || '',
+      phone: driver.phone || '',
+      license: driver.license || driver.license_no || '',
     })
-    setEditingId(driver.id)
+    setEditingId(driver.id || driver.driver_id)
     setShowForm(true)
   }
 
-  const deleteDriver = (id) => {
+  const deleteDriver = async (id) => {
     if (window.confirm('Are you sure you want to delete this driver?')) {
-      setDrivers(drivers.filter((driver) => driver.id !== id))
+      try {
+        await apiDeleteDriver(id)
+        loadDrivers()
+      } catch (err) {
+        const msg = err.response?.data?.message || err.message
+        alert(`Delete failed: ${msg}`)
+        setDrivers(drivers.filter((driver) => (driver.id || driver.driver_id) !== id))
+      }
       if (editingId === id) resetForm()
     }
   }
@@ -143,8 +185,7 @@ if (!form.license.trim()) {
           <input
             required
             type="tel"
-            pattern="[0-9]{10}"
-            placeholder="10-digit Phone Number"
+            placeholder="Phone Number"
             value={form.phone}
             onChange={(e) => setForm({ ...form, phone: e.target.value })}
             className="border p-3 rounded-lg"
@@ -197,10 +238,10 @@ if (!form.license.trim()) {
 
             <tbody>
               {filteredDrivers.map((driver) => (
-                <tr key={driver.id} className="border-t text-sm">
+                <tr key={driver.id || driver.driver_id} className="border-t text-sm">
                   <td className="p-4 font-medium">{driver.name}</td>
                   <td className="p-4">{driver.phone}</td>
-                  <td className="p-4">{driver.license}</td>
+                  <td className="p-4">{driver.license || driver.license_no}</td>
                   <td className="p-4">{driver.status}</td>
                   <td className="p-4 flex gap-3">
                     <button
@@ -212,7 +253,7 @@ if (!form.license.trim()) {
                     </button>
 
                     <button
-                      onClick={() => deleteDriver(driver.id)}
+                      onClick={() => deleteDriver(driver.id || driver.driver_id)}
                       className="text-red-600"
                       title="Delete driver"
                     >

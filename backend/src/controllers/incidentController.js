@@ -5,11 +5,22 @@
 
 const { pool } = require('../config/db');
 
+function formatIncident(row) {
+    if (!row) return row;
+    return {
+        ...row,
+        id: row.incident_id,
+        bus: row.bus_number,
+        type: row.incident_type,
+        status: row.status,
+        severity: row.severity,
+        description: row.description
+    };
+}
+
 /**
  * GET /api/incidents
- * Retrieve all safety incidents with optional query filters:
- * - trip_id, status, severity, incident_type
- * Returns enriched records with Bus, Driver, and Route metadata.
+ * Retrieve all safety incidents with optional query filters
  */
 async function getAllIncidents(req, res, next) {
     try {
@@ -77,7 +88,7 @@ async function getAllIncidents(req, res, next) {
         res.status(200).json({
             success: true,
             message: 'Safety incidents retrieved successfully.',
-            data: rows
+            data: rows.map(formatIncident)
         });
     } catch (error) {
         next(error);
@@ -134,7 +145,7 @@ async function getIncidentById(req, res, next) {
         res.status(200).json({
             success: true,
             message: 'Incident details retrieved successfully.',
-            data: rows[0]
+            data: formatIncident(rows[0])
         });
     } catch (error) {
         next(error);
@@ -144,10 +155,6 @@ async function getIncidentById(req, res, next) {
 /**
  * PATCH /api/incidents/:id/status
  * Update the status of an incident (Open -> Investigating -> Resolved)
- * Rules:
- * - When status is set to 'Resolved', resolved_at is set to current timestamp.
- * - When reopened ('Open' or 'Investigating'), resolved_at is cleared to NULL.
- * - Immutable fields (incident_id, trip_id) cannot be modified.
  */
 async function updateIncidentStatus(req, res, next) {
     try {
@@ -175,7 +182,6 @@ async function updateIncidentStatus(req, res, next) {
             });
         }
 
-        // Determine resolved_at adjustment
         let resolvedAtClause = 'resolved_at = NULL';
         if (status === 'Resolved') {
             resolvedAtClause = 'resolved_at = NOW()';
@@ -184,7 +190,6 @@ async function updateIncidentStatus(req, res, next) {
         const updates = ['status = ?', resolvedAtClause];
         const params = [status];
 
-        // Optional description append or note
         if (description !== undefined && typeof description === 'string' && description.trim() !== '') {
             updates.push('description = CONCAT(description, " | Note: ", ?)');
             params.push(description.trim());
@@ -194,19 +199,21 @@ async function updateIncidentStatus(req, res, next) {
 
         await pool.query(`UPDATE Safety_Incident SET ${updates.join(', ')} WHERE incident_id = ?`, params);
 
-        // Fetch updated incident
         const [updatedRows] = await pool.query(`
             SELECT 
-                incident_id, trip_id, incident_type, description, 
-                severity, status, reported_at, resolved_at 
-            FROM Safety_Incident 
-            WHERE incident_id = ?
+                i.incident_id, i.trip_id, i.incident_type, i.description, 
+                i.severity, i.status, i.reported_at, i.resolved_at,
+                b.bus_number
+            FROM Safety_Incident i
+            INNER JOIN Trip t ON i.trip_id = t.trip_id
+            INNER JOIN Bus b ON t.bus_id = b.bus_id
+            WHERE i.incident_id = ?
         `, [incidentId]);
 
         res.status(200).json({
             success: true,
             message: `Incident #${incidentId} status updated to '${status}'.`,
-            data: updatedRows[0]
+            data: formatIncident(updatedRows[0])
         });
     } catch (error) {
         next(error);
@@ -215,7 +222,7 @@ async function updateIncidentStatus(req, res, next) {
 
 /**
  * POST /api/incidents
- * Manually report a non-overcrowding safety incident (e.g. Accident, Medical Emergency, Safety)
+ * Manually report a non-overcrowding safety incident
  */
 async function createManualIncident(req, res, next) {
     try {
@@ -242,7 +249,6 @@ async function createManualIncident(req, res, next) {
             });
         }
 
-        // Verify trip exists
         const [tripRows] = await pool.query('SELECT trip_id FROM Trip WHERE trip_id = ?', [numTripId]);
         if (tripRows.length === 0) {
             return res.status(404).json({ success: false, message: `Trip with ID ${numTripId} not found.` });
@@ -253,12 +259,18 @@ async function createManualIncident(req, res, next) {
             VALUES (?, ?, ?, ?, 'Open', NOW())
         `, [numTripId, incident_type, description ? description.trim() : null, severity]);
 
-        const [createdRows] = await pool.query('SELECT * FROM Safety_Incident WHERE incident_id = ?', [result.insertId]);
+        const [createdRows] = await pool.query(`
+            SELECT i.*, b.bus_number 
+            FROM Safety_Incident i 
+            INNER JOIN Trip t ON i.trip_id = t.trip_id 
+            INNER JOIN Bus b ON t.bus_id = b.bus_id 
+            WHERE i.incident_id = ?
+        `, [result.insertId]);
 
         res.status(201).json({
             success: true,
             message: 'Safety incident logged successfully.',
-            data: createdRows[0]
+            data: formatIncident(createdRows[0])
         });
     } catch (error) {
         next(error);
@@ -271,4 +283,3 @@ module.exports = {
     updateIncidentStatus,
     createManualIncident
 };
-

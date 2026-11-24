@@ -5,9 +5,20 @@
 
 const { pool } = require('../config/db');
 
+function formatRoute(row, stopsList = null) {
+    if (!row) return row;
+    const stopsArray = stopsList || (row.stops_str ? row.stops_str.split(' || ') : []);
+    return {
+        ...row,
+        id: row.route_id,
+        name: row.route_name,
+        stops: stopsArray
+    };
+}
+
 /**
  * GET /api/routes
- * Retrieve all routes along with their stop count and terminal endpoints
+ * Retrieve all routes along with their stop count, stop array, and terminal endpoints
  */
 async function getAllRoutes(req, res, next) {
     try {
@@ -19,7 +30,8 @@ async function getAllRoutes(req, res, next) {
                 r.destination, 
                 r.distance_km, 
                 r.created_at,
-                COUNT(s.stop_id) AS total_stops
+                COUNT(s.stop_id) AS total_stops,
+                GROUP_CONCAT(s.stop_name ORDER BY s.stop_order SEPARATOR ' || ') AS stops_str
             FROM Route r
             LEFT JOIN Bus_Stop s ON r.route_id = s.route_id
             GROUP BY r.route_id, r.route_name, r.source, r.destination, r.distance_km, r.created_at
@@ -30,7 +42,7 @@ async function getAllRoutes(req, res, next) {
         res.status(200).json({
             success: true,
             message: 'Routes retrieved successfully.',
-            data: rows
+            data: rows.map(r => formatRoute(r))
         });
     } catch (error) {
         next(error);
@@ -62,9 +74,13 @@ async function getRouteById(req, res, next) {
             [routeId]
         );
 
+        const stopsNames = stopRows.map(s => s.stop_name);
         const routeData = {
             ...routeRows[0],
-            stops: stopRows
+            id: routeRows[0].route_id,
+            name: routeRows[0].route_name,
+            stops: stopsNames,
+            stops_detail: stopRows
         };
 
         res.status(200).json({
@@ -84,7 +100,11 @@ async function getRouteById(req, res, next) {
 async function createRoute(req, res, next) {
     const connection = await pool.getConnection();
     try {
-        const { route_name, source, destination, distance_km, stops } = req.body;
+        const route_name = req.body.route_name || req.body.name;
+        const source = req.body.source;
+        const destination = req.body.destination;
+        const distance_km = req.body.distance_km;
+        const stops = req.body.stops;
 
         if (!route_name || typeof route_name !== 'string' || route_name.trim() === '') {
             return res.status(400).json({ success: false, message: 'Validation error: route_name is required.' });
@@ -112,6 +132,7 @@ async function createRoute(req, res, next) {
         const newRouteId = routeResult.insertId;
 
         // If stops array is provided, insert them sequentially
+        const stopsList = [];
         if (Array.isArray(stops) && stops.length > 0) {
             const stopValues = [];
             for (let i = 0; i < stops.length; i++) {
@@ -119,35 +140,33 @@ async function createRoute(req, res, next) {
                 const stopName = typeof s === 'string' ? s : s.stop_name;
                 const stopOrder = s.stop_order !== undefined ? Number(s.stop_order) : (i + 1);
 
-                if (!stopName || typeof stopName !== 'string' || stopName.trim() === '') {
-                    await connection.rollback();
-                    return res.status(400).json({
-                        success: false,
-                        message: `Validation error at stop index ${i}: stop_name is required.`
-                    });
+                if (stopName && typeof stopName === 'string' && stopName.trim() !== '') {
+                    stopValues.push([newRouteId, stopName.trim(), stopOrder]);
+                    stopsList.push(stopName.trim());
                 }
-
-                stopValues.push([newRouteId, stopName.trim(), stopOrder]);
             }
 
-            await connection.query(
-                'INSERT INTO Bus_Stop (route_id, stop_name, stop_order) VALUES ?',
-                [stopValues]
-            );
+            if (stopValues.length > 0) {
+                await connection.query(
+                    'INSERT INTO Bus_Stop (route_id, stop_name, stop_order) VALUES ?',
+                    [stopValues]
+                );
+            }
         }
 
         await connection.commit();
 
         // Fetch complete created route
         const [createdRoute] = await pool.query('SELECT * FROM Route WHERE route_id = ?', [newRouteId]);
-        const [createdStops] = await pool.query('SELECT * FROM Bus_Stop WHERE route_id = ? ORDER BY stop_order ASC', [newRouteId]);
 
         res.status(201).json({
             success: true,
             message: 'Route created successfully with ordered stops.',
             data: {
                 ...createdRoute[0],
-                stops: createdStops
+                id: createdRoute[0].route_id,
+                name: createdRoute[0].route_name,
+                stops: stopsList
             }
         });
     } catch (error) {
@@ -175,7 +194,12 @@ async function updateRoute(req, res, next) {
             return res.status(404).json({ success: false, message: `Route with ID ${routeId} not found.` });
         }
 
-        const { route_name, source, destination, distance_km, stops } = req.body;
+        const route_name = req.body.route_name !== undefined ? req.body.route_name : req.body.name;
+        const source = req.body.source;
+        const destination = req.body.destination;
+        const distance_km = req.body.distance_km;
+        const stops = req.body.stops;
+
         const updates = [];
         const params = [];
 
@@ -220,29 +244,37 @@ async function updateRoute(req, res, next) {
         }
 
         // If stops array is supplied, replace stops
+        const stopsList = [];
         if (Array.isArray(stops)) {
             await connection.query('DELETE FROM Bus_Stop WHERE route_id = ?', [routeId]);
             if (stops.length > 0) {
-                const stopValues = stops.map((s, idx) => [
-                    routeId,
-                    (typeof s === 'string' ? s : s.stop_name).trim(),
-                    s.stop_order !== undefined ? Number(s.stop_order) : (idx + 1)
-                ]);
-                await connection.query('INSERT INTO Bus_Stop (route_id, stop_name, stop_order) VALUES ?', [stopValues]);
+                const stopValues = [];
+                stops.forEach((s, idx) => {
+                    const stopName = typeof s === 'string' ? s : s.stop_name;
+                    const stopOrder = s.stop_order !== undefined ? Number(s.stop_order) : (idx + 1);
+                    if (stopName && typeof stopName === 'string' && stopName.trim() !== '') {
+                        stopValues.push([routeId, stopName.trim(), stopOrder]);
+                        stopsList.push(stopName.trim());
+                    }
+                });
+                if (stopValues.length > 0) {
+                    await connection.query('INSERT INTO Bus_Stop (route_id, stop_name, stop_order) VALUES ?', [stopValues]);
+                }
             }
         }
 
         await connection.commit();
 
         const [updatedRoute] = await pool.query('SELECT * FROM Route WHERE route_id = ?', [routeId]);
-        const [updatedStops] = await pool.query('SELECT * FROM Bus_Stop WHERE route_id = ? ORDER BY stop_order ASC', [routeId]);
 
         res.status(200).json({
             success: true,
             message: 'Route updated successfully.',
             data: {
                 ...updatedRoute[0],
-                stops: updatedStops
+                id: updatedRoute[0].route_id,
+                name: updatedRoute[0].route_name,
+                stops: stopsList
             }
         });
     } catch (error) {

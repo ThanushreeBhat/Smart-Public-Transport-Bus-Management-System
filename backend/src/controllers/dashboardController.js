@@ -7,14 +7,7 @@ const { pool } = require('../config/db');
 
 /**
  * GET /api/dashboard
- * Computes live operational dashboard metrics directly via database queries:
- * - total_buses
- * - active_buses
- * - total_drivers
- * - todays_trips
- * - overcrowded_trips (distinct trips with an unresolved Overcrowding incident)
- * - open_incidents
- * - resolved_incidents
+ * Computes live operational dashboard metrics directly via database queries
  */
 async function getDashboardSummary(req, res, next) {
     try {
@@ -30,7 +23,7 @@ async function getDashboardSummary(req, res, next) {
         const [driverStats] = await pool.query(`
             SELECT 
                 COUNT(*) AS total_drivers,
-                SUM(CASE WHEN status = 'Available' THEN 1 ELSE 0 END) AS available_drivers,
+                SUM(CASE WHEN status IN ('Available', 'Active') THEN 1 ELSE 0 END) AS available_drivers,
                 SUM(CASE WHEN status = 'On Duty' THEN 1 ELSE 0 END) AS on_duty_drivers
             FROM Driver
         `);
@@ -39,7 +32,7 @@ async function getDashboardSummary(req, res, next) {
         const [tripStats] = await pool.query(`
             SELECT 
                 COUNT(*) AS todays_trips,
-                SUM(CASE WHEN status = 'In Progress' THEN 1 ELSE 0 END) AS in_progress_trips,
+                SUM(CASE WHEN status IN ('In Progress', 'Ongoing') THEN 1 ELSE 0 END) AS in_progress_trips,
                 SUM(CASE WHEN status = 'Completed' THEN 1 ELSE 0 END) AS completed_trips,
                 SUM(CASE WHEN status = 'Scheduled' THEN 1 ELSE 0 END) AS scheduled_trips
             FROM Trip
@@ -50,7 +43,6 @@ async function getDashboardSummary(req, res, next) {
         const [totalTripsCount] = await pool.query('SELECT COUNT(*) AS total_trips FROM Trip');
 
         // Query 5: Safety Incidents & Overcrowded Trips metrics
-        // Overcrowded trips rule: Distinct trips currently associated with an unresolved ('Open' or 'Investigating') Overcrowding incident
         const [incidentStats] = await pool.query(`
             SELECT 
                 COUNT(*) AS total_incidents,
@@ -64,7 +56,21 @@ async function getDashboardSummary(req, res, next) {
             FROM Safety_Incident
         `);
 
-        // Query 6: Quick recent unresolved alerts list for dashboard ticker
+        // Query 6: Recent Trips for Dashboard Display
+        const [recentTrips] = await pool.query(`
+            SELECT 
+                t.trip_id,
+                b.bus_number AS bus,
+                r.route_name AS route,
+                t.status
+            FROM Trip t
+            INNER JOIN Bus b ON t.bus_id = b.bus_id
+            INNER JOIN Route r ON t.route_id = r.route_id
+            ORDER BY t.trip_date DESC, t.start_time DESC
+            LIMIT 5
+        `);
+
+        // Query 7: Safety Alerts for Dashboard Display
         const [recentIncidents] = await pool.query(`
             SELECT 
                 i.incident_id,
@@ -85,21 +91,47 @@ async function getDashboardSummary(req, res, next) {
             LIMIT 5
         `);
 
+        const totalBuses = Number(busStats[0].total_buses) || 0;
+        const todaysTrips = Number(tripStats[0].todays_trips) || 0;
+        const overcrowdedTrips = Number(incidentStats[0].overcrowded_trips) || 0;
+        const openIncidents = Number(incidentStats[0].open_incidents) || 0;
+
         const dashboardData = {
-            total_buses: Number(busStats[0].total_buses) || 0,
+            total_buses: totalBuses,
             active_buses: Number(busStats[0].active_buses) || 0,
             total_drivers: Number(driverStats[0].total_drivers) || 0,
             available_drivers: Number(driverStats[0].available_drivers) || 0,
             on_duty_drivers: Number(driverStats[0].on_duty_drivers) || 0,
-            todays_trips: Number(tripStats[0].todays_trips) || 0,
-            "today's_trips": Number(tripStats[0].todays_trips) || 0,
+            todays_trips: todaysTrips,
+            "today's_trips": todaysTrips,
             in_progress_trips: Number(tripStats[0].in_progress_trips) || 0,
             scheduled_trips: Number(tripStats[0].scheduled_trips) || 0,
             total_trips: Number(totalTripsCount[0].total_trips) || 0,
-            overcrowded_trips: Number(incidentStats[0].overcrowded_trips) || 0,
-            open_incidents: Number(incidentStats[0].open_incidents) || 0,
+            overcrowded_trips: overcrowdedTrips,
+            open_incidents: openIncidents,
             resolved_incidents: Number(incidentStats[0].resolved_incidents) || 0,
             total_incidents: Number(incidentStats[0].total_incidents) || 0,
+            
+            // Direct array of cards for frontend Dashboard.jsx
+            stats: [
+                {
+                    title: 'Total Buses',
+                    value: String(totalBuses).padStart(2, '0')
+                },
+                {
+                    title: "Today's Trips",
+                    value: String(todaysTrips).padStart(2, '0')
+                },
+                {
+                    title: 'Overcrowded Trips',
+                    value: String(overcrowdedTrips).padStart(2, '0')
+                },
+                {
+                    title: 'Open Incidents',
+                    value: String(openIncidents).padStart(2, '0')
+                }
+            ],
+            recent_trips: recentTrips,
             recent_unresolved_alerts: recentIncidents
         };
 
@@ -116,4 +148,3 @@ async function getDashboardSummary(req, res, next) {
 module.exports = {
     getDashboardSummary
 };
-

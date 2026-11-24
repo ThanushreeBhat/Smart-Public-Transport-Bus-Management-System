@@ -5,6 +5,17 @@
 
 const { pool } = require('../config/db');
 
+const ALLOWED_DRIVER_STATUSES = ['Available', 'On Duty', 'Inactive', 'Active'];
+
+function formatDriver(row) {
+    if (!row) return row;
+    return {
+        ...row,
+        id: row.driver_id,
+        license: row.license_no
+    };
+}
+
 /**
  * GET /api/drivers
  * Retrieve all drivers with optional status filtering
@@ -25,7 +36,7 @@ async function getAllDrivers(req, res, next) {
         res.status(200).json({
             success: true,
             message: 'Drivers retrieved successfully.',
-            data: rows
+            data: rows.map(formatDriver)
         });
     } catch (error) {
         next(error);
@@ -61,7 +72,7 @@ async function getDriverById(req, res, next) {
         res.status(200).json({
             success: true,
             message: 'Driver details retrieved successfully.',
-            data: rows[0]
+            data: formatDriver(rows[0])
         });
     } catch (error) {
         next(error);
@@ -74,7 +85,9 @@ async function getDriverById(req, res, next) {
  */
 async function createDriver(req, res, next) {
     try {
-        const { name, phone, license_no, status = 'Available' } = req.body;
+        const { name, phone } = req.body;
+        const license_no = req.body.license_no || req.body.license;
+        const status = req.body.status || 'Active';
 
         if (!name || typeof name !== 'string' || name.trim() === '') {
             return res.status(400).json({ success: false, message: 'Validation error: name is required.' });
@@ -83,14 +96,13 @@ async function createDriver(req, res, next) {
             return res.status(400).json({ success: false, message: 'Validation error: phone is required.' });
         }
         if (!license_no || typeof license_no !== 'string' || license_no.trim() === '') {
-            return res.status(400).json({ success: false, message: 'Validation error: license_no is required.' });
+            return res.status(400).json({ success: false, message: 'Validation error: license is required.' });
         }
 
-        const allowedStatuses = ['Available', 'On Duty', 'Inactive'];
-        if (!allowedStatuses.includes(status)) {
+        if (!ALLOWED_DRIVER_STATUSES.includes(status)) {
             return res.status(400).json({
                 success: false,
-                message: `Validation error: status must be one of [${allowedStatuses.join(', ')}].`
+                message: `Validation error: status must be one of [${ALLOWED_DRIVER_STATUSES.join(', ')}].`
             });
         }
 
@@ -109,7 +121,7 @@ async function createDriver(req, res, next) {
         res.status(201).json({
             success: true,
             message: 'Driver created successfully.',
-            data: createdRows[0]
+            data: formatDriver(createdRows[0])
         });
     } catch (error) {
         next(error);
@@ -132,7 +144,10 @@ async function updateDriver(req, res, next) {
             return res.status(404).json({ success: false, message: `Driver with ID ${driverId} not found.` });
         }
 
-        const { name, phone, license_no, status } = req.body;
+        const { name, phone } = req.body;
+        const license_no = req.body.license_no !== undefined ? req.body.license_no : req.body.license;
+        const status = req.body.status;
+
         const updates = [];
         const params = [];
 
@@ -154,16 +169,15 @@ async function updateDriver(req, res, next) {
 
         if (license_no !== undefined) {
             if (typeof license_no !== 'string' || license_no.trim() === '') {
-                return res.status(400).json({ success: false, message: 'license_no cannot be empty.' });
+                return res.status(400).json({ success: false, message: 'license cannot be empty.' });
             }
             updates.push('license_no = ?');
             params.push(license_no.trim().toUpperCase());
         }
 
         if (status !== undefined) {
-            const allowedStatuses = ['Available', 'On Duty', 'Inactive'];
-            if (!allowedStatuses.includes(status)) {
-                return res.status(400).json({ success: false, message: `status must be one of [${allowedStatuses.join(', ')}].` });
+            if (!ALLOWED_DRIVER_STATUSES.includes(status)) {
+                return res.status(400).json({ success: false, message: `status must be one of [${ALLOWED_DRIVER_STATUSES.join(', ')}].` });
             }
             updates.push('status = ?');
             params.push(status);
@@ -184,7 +198,7 @@ async function updateDriver(req, res, next) {
         res.status(200).json({
             success: true,
             message: 'Driver updated successfully.',
-            data: updatedRows[0]
+            data: formatDriver(updatedRows[0])
         });
     } catch (error) {
         next(error);

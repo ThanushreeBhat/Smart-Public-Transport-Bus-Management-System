@@ -1,6 +1,6 @@
-
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Plus, Search, Pencil, Trash2 } from 'lucide-react'
+import { getBuses, addBus, updateBus as apiUpdateBus, deleteBus as apiDeleteBus } from '../services/busService'
 
 function Buses() {
   const [search, setSearch] = useState('')
@@ -19,8 +19,24 @@ function Buses() {
     type: 'Standard',
   })
 
+  const loadBuses = () => {
+    getBuses()
+      .then((data) => {
+        if (Array.isArray(data) && data.length > 0) {
+          setBuses(data)
+        }
+      })
+      .catch((err) => {
+        console.warn('Using local buses state:', err.message)
+      })
+  }
+
+  useEffect(() => {
+    loadBuses()
+  }, [])
+
   const filteredBuses = buses.filter((bus) =>
-    bus.number.toLowerCase().includes(search.toLowerCase())
+    (bus.number || bus.bus_number || '').toLowerCase().includes(search.toLowerCase())
   )
 
   const resetForm = () => {
@@ -29,22 +45,22 @@ function Buses() {
     setShowForm(false)
   }
 
-  const saveBus = (e) => {
+  const saveBus = async (e) => {
     e.preventDefault()
     if (!form.number.trim()) {
-  alert('Please enter a bus number.')
-  return
-}
+      alert('Please enter a bus number.')
+      return
+    }
 
-if (!form.capacity || Number(form.capacity) < 1) {
-  alert('Please enter a valid seating capacity.')
-  return
-}
+    if (!form.capacity || Number(form.capacity) < 1) {
+      alert('Please enter a valid seating capacity.')
+      return
+    }
 
     const duplicate = buses.some(
       (bus) =>
-        bus.number.toLowerCase() === form.number.trim().toLowerCase() &&
-        bus.id !== editingId
+        (bus.number || bus.bus_number || '').toLowerCase() === form.number.trim().toLowerCase() &&
+        (bus.id || bus.bus_id) !== editingId
     )
 
     if (duplicate) {
@@ -52,23 +68,42 @@ if (!form.capacity || Number(form.capacity) < 1) {
       return
     }
 
-    if (editingId !== null) {
-      setBuses(buses.map((bus) =>
-        bus.id === editingId
-          ? { ...bus, ...form, number: form.number.trim(), capacity: Number(form.capacity) }
-          : bus
-      ))
-    } else {
-      setBuses([
-        ...buses,
-        {
-          id: Date.now(),
-          ...form,
-          number: form.number.trim(),
+    try {
+      if (editingId !== null) {
+        await apiUpdateBus(editingId, {
+          bus_number: form.number.trim(),
           capacity: Number(form.capacity),
-          status: 'Active',
-        },
-      ])
+          bus_type: form.type
+        })
+      } else {
+        await addBus({
+          bus_number: form.number.trim(),
+          capacity: Number(form.capacity),
+          bus_type: form.type,
+          status: 'Active'
+        })
+      }
+      loadBuses()
+    } catch (err) {
+      console.warn('API error during bus save, updating local state:', err.message)
+      if (editingId !== null) {
+        setBuses(buses.map((bus) =>
+          (bus.id || bus.bus_id) === editingId
+            ? { ...bus, ...form, number: form.number.trim(), capacity: Number(form.capacity) }
+            : bus
+        ))
+      } else {
+        setBuses([
+          ...buses,
+          {
+            id: Date.now(),
+            ...form,
+            number: form.number.trim(),
+            capacity: Number(form.capacity),
+            status: 'Active',
+          },
+        ])
+      }
     }
 
     resetForm()
@@ -76,17 +111,24 @@ if (!form.capacity || Number(form.capacity) < 1) {
 
   const editBus = (bus) => {
     setForm({
-      number: bus.number,
+      number: bus.number || bus.bus_number || '',
       capacity: String(bus.capacity),
-      type: bus.type,
+      type: bus.type || bus.bus_type || 'Standard',
     })
-    setEditingId(bus.id)
+    setEditingId(bus.id || bus.bus_id)
     setShowForm(true)
   }
 
-  const deleteBus = (id) => {
+  const deleteBus = async (id) => {
     if (window.confirm('Are you sure you want to delete this bus?')) {
-      setBuses(buses.filter((bus) => bus.id !== id))
+      try {
+        await apiDeleteBus(id)
+        loadBuses()
+      } catch (err) {
+        const msg = err.response?.data?.message || err.message
+        alert(`Delete failed: ${msg}`)
+        setBuses(buses.filter((bus) => (bus.id || bus.bus_id) !== id))
+      }
       if (editingId === id) resetForm()
     }
   }
@@ -184,10 +226,10 @@ if (!form.capacity || Number(form.capacity) < 1) {
 
             <tbody>
               {filteredBuses.map((bus) => (
-                <tr key={bus.id} className="border-t text-sm">
-                  <td className="p-4 font-medium">{bus.number}</td>
+                <tr key={bus.id || bus.bus_id} className="border-t text-sm">
+                  <td className="p-4 font-medium">{bus.number || bus.bus_number}</td>
                   <td className="p-4">{bus.capacity}</td>
-                  <td className="p-4">{bus.type}</td>
+                  <td className="p-4">{bus.type || bus.bus_type}</td>
                   <td className="p-4">
                     <span className={`px-3 py-1 rounded-full text-xs ${
                       bus.status === 'Active'
@@ -206,7 +248,7 @@ if (!form.capacity || Number(form.capacity) < 1) {
                       <Pencil size={18} />
                     </button>
                     <button
-                      onClick={() => deleteBus(bus.id)}
+                      onClick={() => deleteBus(bus.id || bus.bus_id)}
                       className="text-red-600"
                       title="Delete"
                     >

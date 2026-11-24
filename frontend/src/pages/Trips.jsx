@@ -1,5 +1,4 @@
-
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import {
   Plus,
   Search,
@@ -7,6 +6,10 @@ import {
   CalendarDays,
   Pencil,
 } from 'lucide-react'
+import { getTrips, addTrip, updateTrip as apiUpdateTrip, deleteTrip as apiDeleteTrip } from '../services/tripService'
+import { getBuses } from '../services/busService'
+import { getDrivers } from '../services/driverService'
+import { getRoutes } from '../services/routeService'
 
 function Trips() {
   const [trips, setTrips] = useState([
@@ -32,6 +35,10 @@ function Trips() {
     },
   ])
 
+  const [availableBuses, setAvailableBuses] = useState(['KA-19-1234', 'KA-19-5678', 'KA-19-9012'])
+  const [availableDrivers, setAvailableDrivers] = useState(['Rahul Kumar', 'Arun Shetty', 'Vijay Rao'])
+  const [availableRoutes, setAvailableRoutes] = useState(['Mangalore - Udupi', 'Mangalore - Karkala', 'Udupi - Kundapura'])
+
   const [showForm, setShowForm] = useState(false)
   const [search, setSearch] = useState('')
   const [editingId, setEditingId] = useState(null)
@@ -47,8 +54,50 @@ function Trips() {
 
   const [form, setForm] = useState(emptyForm)
 
+  const loadTrips = () => {
+    getTrips()
+      .then((data) => {
+        if (Array.isArray(data) && data.length > 0) {
+          setTrips(data)
+        }
+      })
+      .catch((err) => console.warn('Using local trips state:', err.message))
+  }
+
+  useEffect(() => {
+    loadTrips()
+
+    // Populate dropdown options dynamically from database
+    getBuses()
+      .then((data) => {
+        if (Array.isArray(data) && data.length > 0) {
+          const numbers = data.map((b) => b.number || b.bus_number).filter(Boolean)
+          setAvailableBuses(Array.from(new Set([...numbers, 'KA-19-1234', 'KA-19-5678', 'KA-19-9012'])))
+        }
+      })
+      .catch(() => {})
+
+    getDrivers()
+      .then((data) => {
+        if (Array.isArray(data) && data.length > 0) {
+          const names = data.map((d) => d.name).filter(Boolean)
+          setAvailableDrivers(Array.from(new Set([...names, 'Rahul Kumar', 'Arun Shetty', 'Vijay Rao'])))
+        }
+      })
+      .catch(() => {})
+
+    getRoutes()
+      .then((data) => {
+        if (Array.isArray(data) && data.length > 0) {
+          const rNames = data.map((r) => r.name || r.route_name).filter(Boolean)
+          setAvailableRoutes(Array.from(new Set([...rNames, 'Mangalore - Udupi', 'Mangalore - Karkala', 'Udupi - Kundapura'])))
+        }
+      })
+      .catch(() => {})
+  }, [])
+
   const filteredTrips = trips.filter((trip) =>
-    `${trip.bus} ${trip.driver} ${trip.route}`
+    `${trip.bus || trip.bus_number || ''} ${trip.driver || trip.driver_name || ''} ${trip.route || trip.route_name || ''}`
       .toLowerCase()
       .includes(search.toLowerCase())
   )
@@ -59,32 +108,25 @@ function Trips() {
     setShowForm(false)
   }
 
-  const saveTrip = (e) => {
+  const saveTrip = async (e) => {
     e.preventDefault()
     if (!form.bus || !form.driver || !form.route || !form.date) {
-  alert('Please fill in all trip details.')
-  return
-}
+      alert('Please fill in all trip details.')
+      return
+    }
 
-const today = new Date().toLocaleDateString('en-CA')
-
-if (form.date < today) {
-  alert('You cannot schedule a trip in the past.')
-  return
-}
-
-    if (form.endTime <= form.startTime) {
+    if (form.endTime && form.startTime && form.endTime <= form.startTime) {
       alert('End time must be later than start time.')
       return
     }
 
     const busAlreadyScheduled = trips.some(
       (trip) =>
-        trip.id !== editingId &&
-        trip.bus === form.bus &&
-        trip.date === form.date &&
-        form.startTime < trip.endTime &&
-        form.endTime > trip.startTime
+        (trip.id || trip.trip_id) !== editingId &&
+        (trip.bus || trip.bus_number) === form.bus &&
+        (trip.date || trip.trip_date) === form.date &&
+        form.startTime < (trip.endTime || trip.end_time) &&
+        (form.endTime ? form.endTime > (trip.startTime || trip.start_time) : true)
     )
 
     if (busAlreadyScheduled) {
@@ -95,23 +137,49 @@ if (form.date < today) {
     const updatedTrip = {
       ...form,
       status: editingId !== null
-        ? trips.find((trip) => trip.id === editingId).status
+        ? (trips.find((trip) => (trip.id || trip.trip_id) === editingId)?.status || 'Scheduled')
         : 'Scheduled',
     }
 
-    if (editingId !== null) {
-      setTrips((current) =>
-        current.map((trip) =>
-          trip.id === editingId
-            ? { ...trip, ...updatedTrip }
-            : trip
+    try {
+      if (editingId !== null) {
+        await apiUpdateTrip(editingId, {
+          bus: form.bus,
+          driver: form.driver,
+          route: form.route,
+          trip_date: form.date,
+          start_time: form.startTime,
+          end_time: form.endTime,
+          status: updatedTrip.status
+        })
+      } else {
+        await addTrip({
+          bus: form.bus,
+          driver: form.driver,
+          route: form.route,
+          trip_date: form.date,
+          start_time: form.startTime,
+          end_time: form.endTime,
+          status: 'Scheduled'
+        })
+      }
+      loadTrips()
+    } catch (err) {
+      console.warn('API error saving trip, updating local state:', err.message)
+      if (editingId !== null) {
+        setTrips((current) =>
+          current.map((trip) =>
+            (trip.id || trip.trip_id) === editingId
+              ? { ...trip, ...updatedTrip }
+              : trip
+          )
         )
-      )
-    } else {
-      setTrips((current) => [
-        ...current,
-        { id: Date.now(), ...updatedTrip },
-      ])
+      } else {
+        setTrips((current) => [
+          ...current,
+          { id: Date.now(), ...updatedTrip },
+        ])
+      }
     }
 
     resetForm()
@@ -119,20 +187,27 @@ if (form.date < today) {
 
   const editTrip = (trip) => {
     setForm({
-      bus: trip.bus,
-      driver: trip.driver,
-      route: trip.route,
-      date: trip.date,
-      startTime: trip.startTime,
-      endTime: trip.endTime,
+      bus: trip.bus || trip.bus_number || '',
+      driver: trip.driver || trip.driver_name || '',
+      route: trip.route || trip.route_name || '',
+      date: trip.date || trip.trip_date || '',
+      startTime: trip.startTime || (trip.start_time ? trip.start_time.substring(0, 5) : ''),
+      endTime: trip.endTime || (trip.end_time ? trip.end_time.substring(0, 5) : ''),
     })
-    setEditingId(trip.id)
+    setEditingId(trip.id || trip.trip_id)
     setShowForm(true)
   }
 
-  const deleteTrip = (id) => {
+  const deleteTrip = async (id) => {
     if (window.confirm('Are you sure you want to delete this trip?')) {
-      setTrips((current) => current.filter((trip) => trip.id !== id))
+      try {
+        await apiDeleteTrip(id)
+        loadTrips()
+      } catch (err) {
+        const msg = err.response?.data?.message || err.message
+        alert(`Delete failed: ${msg}`)
+        setTrips((current) => current.filter((trip) => (trip.id || trip.trip_id) !== id))
+      }
       if (editingId === id) resetForm()
     }
   }
@@ -178,9 +253,9 @@ if (form.date < today) {
             className="border p-3 rounded-lg"
           >
             <option value="">Select Bus</option>
-            <option value="KA-19-1234">KA-19-1234</option>
-            <option value="KA-19-5678">KA-19-5678</option>
-            <option value="KA-19-9012">KA-19-9012</option>
+            {availableBuses.map((b) => (
+              <option key={b} value={b}>{b}</option>
+            ))}
           </select>
 
           <select
@@ -190,9 +265,9 @@ if (form.date < today) {
             className="border p-3 rounded-lg"
           >
             <option value="">Select Driver</option>
-            <option value="Rahul Kumar">Rahul Kumar</option>
-            <option value="Arun Shetty">Arun Shetty</option>
-            <option value="Vijay Rao">Vijay Rao</option>
+            {availableDrivers.map((d) => (
+              <option key={d} value={d}>{d}</option>
+            ))}
           </select>
 
           <select
@@ -202,9 +277,9 @@ if (form.date < today) {
             className="border p-3 rounded-lg"
           >
             <option value="">Select Route</option>
-            <option value="Mangalore - Udupi">Mangalore - Udupi</option>
-            <option value="Mangalore - Karkala">Mangalore - Karkala</option>
-            <option value="Udupi - Kundapura">Udupi - Kundapura</option>
+            {availableRoutes.map((r) => (
+              <option key={r} value={r}>{r}</option>
+            ))}
           </select>
 
           <input
@@ -283,18 +358,18 @@ if (form.date < today) {
 
             <tbody>
               {filteredTrips.map((trip) => (
-                <tr key={trip.id} className="border-t text-sm">
-                  <td className="p-4 font-medium">{trip.bus}</td>
-                  <td className="p-4">{trip.driver}</td>
-                  <td className="p-4">{trip.route}</td>
-                  <td className="p-4">{trip.date}</td>
+                <tr key={trip.id || trip.trip_id} className="border-t text-sm">
+                  <td className="p-4 font-medium">{trip.bus || trip.bus_number}</td>
+                  <td className="p-4">{trip.driver || trip.driver_name}</td>
+                  <td className="p-4">{trip.route || trip.route_name}</td>
+                  <td className="p-4">{trip.date || trip.trip_date}</td>
                   <td className="p-4">
                     <span className="flex items-center gap-1">
                       <CalendarDays size={15} />
-                      {trip.startTime}
+                      {trip.startTime || (trip.start_time ? trip.start_time.substring(0, 5) : '')}
                     </span>
                   </td>
-                  <td className="p-4">{trip.endTime}</td>
+                  <td className="p-4">{trip.endTime || (trip.end_time ? trip.end_time.substring(0, 5) : '')}</td>
                   <td className="p-4">{trip.status}</td>
                   <td className="p-4">
                     <div className="flex gap-3">
@@ -307,7 +382,7 @@ if (form.date < today) {
                       </button>
 
                       <button
-                        onClick={() => deleteTrip(trip.id)}
+                        onClick={() => deleteTrip(trip.id || trip.trip_id)}
                         className="text-red-600"
                         title="Delete trip"
                       >

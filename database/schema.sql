@@ -40,7 +40,7 @@ CREATE TABLE Bus (
     CONSTRAINT uq_bus_number UNIQUE (bus_number),
     CONSTRAINT chk_bus_capacity CHECK (capacity > 0),
     CONSTRAINT chk_bus_status CHECK (status IN ('Active', 'Maintenance', 'Inactive')),
-    CONSTRAINT chk_bus_type CHECK (bus_type IN ('Ordinary', 'Express', 'AC', 'Electric'))
+    CONSTRAINT chk_bus_type CHECK (bus_type IN ('Ordinary', 'Express', 'AC', 'Electric', 'Standard', 'Mini Bus'))
 ) ENGINE=InnoDB;
 
 CREATE INDEX idx_bus_status ON Bus (status);
@@ -58,7 +58,7 @@ CREATE TABLE Driver (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT uq_driver_phone UNIQUE (phone),
     CONSTRAINT uq_driver_license UNIQUE (license_no),
-    CONSTRAINT chk_driver_status CHECK (status IN ('Available', 'On Duty', 'Inactive'))
+    CONSTRAINT chk_driver_status CHECK (status IN ('Available', 'On Duty', 'Inactive', 'Active'))
 ) ENGINE=InnoDB;
 
 CREATE INDEX idx_driver_status ON Driver (status);
@@ -124,7 +124,7 @@ CREATE TABLE Trip (
         REFERENCES Route (route_id)
         ON DELETE RESTRICT
         ON UPDATE CASCADE,
-    CONSTRAINT chk_trip_status CHECK (status IN ('Scheduled', 'In Progress', 'Completed', 'Cancelled')),
+    CONSTRAINT chk_trip_status CHECK (status IN ('Scheduled', 'In Progress', 'Ongoing', 'Completed', 'Cancelled')),
     CONSTRAINT chk_trip_time_window CHECK (end_time IS NULL OR end_time > start_time)
 ) ENGINE=InnoDB;
 

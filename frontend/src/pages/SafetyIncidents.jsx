@@ -1,6 +1,6 @@
-
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { CheckCircle } from 'lucide-react'
+import { getIncidents, updateIncidentStatus as apiUpdateIncidentStatus } from '../services/incidentService'
 
 function SafetyIncidents() {
   const [incidents, setIncidents] = useState([
@@ -30,8 +30,24 @@ function SafetyIncidents() {
     },
   ])
 
-  const resolveIncident = (id) => {
-    const incident = incidents.find((item) => item.id === id)
+  const loadIncidents = () => {
+    getIncidents()
+      .then((data) => {
+        if (Array.isArray(data) && data.length > 0) {
+          setIncidents(data)
+        }
+      })
+      .catch((err) => {
+        console.warn('Using local incidents state:', err.message)
+      })
+  }
+
+  useEffect(() => {
+    loadIncidents()
+  }, [])
+
+  const resolveIncident = async (id) => {
+    const incident = incidents.find((item) => (item.id || item.incident_id) === id)
 
     if (!incident || incident.status === 'Resolved') {
       return
@@ -43,18 +59,25 @@ function SafetyIncidents() {
 
     if (!confirmed) return
 
-    setIncidents((previousIncidents) =>
-      previousIncidents.map((item) =>
-        item.id === id
-          ? { ...item, status: 'Resolved' }
-          : item
+    try {
+      await apiUpdateIncidentStatus(id, 'Resolved')
+      loadIncidents()
+    } catch (err) {
+      console.warn('API error resolving incident, updating local state:', err.message)
+      setIncidents((previousIncidents) =>
+        previousIncidents.map((item) =>
+          (item.id || item.incident_id) === id
+            ? { ...item, status: 'Resolved' }
+            : item
+        )
       )
-    )
+    }
   }
 
   const getSeverityStyle = (severity) => {
     switch (severity) {
       case 'High':
+      case 'Critical':
         return 'bg-red-100 text-red-700'
       case 'Medium':
         return 'bg-orange-100 text-orange-700'
@@ -109,9 +132,9 @@ function SafetyIncidents() {
               </tr>
             ) : (
               incidents.map((incident) => (
-                <tr key={incident.id} className="border-t">
-                  <td className="p-4">{incident.bus}</td>
-                  <td className="p-4">{incident.type}</td>
+                <tr key={incident.id || incident.incident_id} className="border-t">
+                  <td className="p-4">{incident.bus || incident.bus_number}</td>
+                  <td className="p-4">{incident.type || incident.incident_type}</td>
                   <td className="p-4">{incident.description}</td>
 
                   <td className="p-4">
@@ -139,7 +162,7 @@ function SafetyIncidents() {
                   <td className="p-4">
                     {incident.status === 'Open' ? (
                       <button
-                        onClick={() => resolveIncident(incident.id)}
+                        onClick={() => resolveIncident(incident.id || incident.incident_id)}
                         className="bg-blue-600 text-white px-3 py-2 rounded-lg text-sm hover:bg-blue-700"
                       >
                         Resolve

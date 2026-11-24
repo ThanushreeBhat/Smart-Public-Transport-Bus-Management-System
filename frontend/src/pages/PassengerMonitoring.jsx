@@ -1,10 +1,15 @@
-
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { AlertTriangle, ShieldCheck } from 'lucide-react'
+import { getPassengerRecords, addPassengerRecord } from '../services/passengerService'
+import { getTrips } from '../services/tripService'
+import { getBuses } from '../services/busService'
 
 function PassengerMonitoring() {
   const [passengerCount, setPassengerCount] = useState('')
   const [selectedTrip, setSelectedTrip] = useState('KA-19-1234')
+  const [availableTrips, setAvailableTrips] = useState(['KA-19-1234', 'KA-19-5678', 'KA-19-9012'])
+  const [busCapacity, setBusCapacity] = useState(50)
+
   const [records, setRecords] = useState([
     {
       id: 1,
@@ -22,7 +27,45 @@ function PassengerMonitoring() {
     },
   ])
 
-  const busCapacity = 50
+  // Load available trips/buses
+  useEffect(() => {
+    getTrips()
+      .then((data) => {
+        if (Array.isArray(data) && data.length > 0) {
+          const busNumbers = data.map((t) => t.bus || t.bus_number).filter(Boolean)
+          const merged = Array.from(new Set([...busNumbers, 'KA-19-1234', 'KA-19-5678', 'KA-19-9012']))
+          setAvailableTrips(merged)
+          if (busNumbers.length > 0 && !busNumbers.includes(selectedTrip)) {
+            setSelectedTrip(busNumbers[0])
+          }
+        }
+      })
+      .catch(() => {})
+  }, [])
+
+  // When selectedTrip changes, fetch capacity and live passenger snapshots
+  useEffect(() => {
+    getBuses()
+      .then((buses) => {
+        if (Array.isArray(buses)) {
+          const matched = buses.find((b) => (b.number || b.bus_number) === selectedTrip)
+          if (matched && matched.capacity) {
+            setBusCapacity(Number(matched.capacity))
+          }
+        }
+      })
+      .catch(() => {})
+
+    getPassengerRecords(selectedTrip)
+      .then((data) => {
+        if (Array.isArray(data) && data.length > 0) {
+          setRecords(data)
+        }
+      })
+      .catch((err) => {
+        console.warn('Using local passenger records state:', err.message)
+      })
+  }, [selectedTrip])
 
   const occupancy = passengerCount
     ? (Number(passengerCount) / busCapacity) * 100
@@ -30,7 +73,7 @@ function PassengerMonitoring() {
 
   const isOvercrowded = Number(passengerCount) > busCapacity
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault()
 
     if (
@@ -42,18 +85,47 @@ function PassengerMonitoring() {
       return
     }
 
-    const newRecord = {
-      id: Date.now(),
-      bus: selectedTrip,
-      count: Number(passengerCount),
-      capacity: busCapacity,
-      status: isOvercrowded ? 'Overcrowded' : 'Normal',
-    }
+    const countNum = Number(passengerCount)
 
-    setRecords((previousRecords) => [
-      newRecord,
-      ...previousRecords,
-    ])
+    try {
+      const res = await addPassengerRecord({
+        trip_id: selectedTrip,
+        bus: selectedTrip,
+        passenger_count: countNum,
+        count: countNum
+      })
+
+      if (res && res.capacity) {
+        setBusCapacity(res.capacity)
+      }
+
+      const newRecord = {
+        id: res?.id || res?.record_id || Date.now(),
+        bus: selectedTrip,
+        count: countNum,
+        capacity: res?.capacity || busCapacity,
+        status: countNum > (res?.capacity || busCapacity) ? 'Overcrowded' : 'Normal',
+      }
+
+      setRecords((previousRecords) => [
+        newRecord,
+        ...previousRecords,
+      ])
+    } catch (err) {
+      console.warn('API error recording passenger, updating local state:', err.message)
+      const newRecord = {
+        id: Date.now(),
+        bus: selectedTrip,
+        count: countNum,
+        capacity: busCapacity,
+        status: isOvercrowded ? 'Overcrowded' : 'Normal',
+      }
+
+      setRecords((previousRecords) => [
+        newRecord,
+        ...previousRecords,
+      ])
+    }
 
     setPassengerCount('')
   }
@@ -89,9 +161,9 @@ function PassengerMonitoring() {
               onChange={(e) => setSelectedTrip(e.target.value)}
               className="w-full border p-3 rounded-lg"
             >
-              <option value="KA-19-1234">KA-19-1234</option>
-              <option value="KA-19-5678">KA-19-5678</option>
-              <option value="KA-19-9012">KA-19-9012</option>
+              {availableTrips.map((b) => (
+                <option key={b} value={b}>{b}</option>
+              ))}
             </select>
           </div>
 
@@ -210,27 +282,27 @@ function PassengerMonitoring() {
                 </tr>
               ) : (
                 records.map((record) => (
-                  <tr key={record.id} className="border-t text-sm">
+                  <tr key={record.id || record.record_id} className="border-t text-sm">
                     <td className="p-4 font-medium">
-                      {record.bus}
+                      {record.bus || record.bus_number}
                     </td>
-                    <td className="p-4">{record.count}</td>
-                    <td className="p-4">{record.capacity}</td>
+                    <td className="p-4">{record.count || record.passenger_count}</td>
+                    <td className="p-4">{record.capacity || record.bus_capacity}</td>
                     <td className="p-4">
                       {(
-                        (record.count / record.capacity) *
+                        ((record.count || record.passenger_count) / (record.capacity || record.bus_capacity || 50)) *
                         100
                       ).toFixed(1)}%
                     </td>
                     <td className="p-4">
                       <span
                         className={`px-3 py-1 rounded-full text-xs ${
-                          record.status === 'Overcrowded'
+                          record.status === 'Overcrowded' || record.overcrowded
                             ? 'bg-red-100 text-red-700'
                             : 'bg-green-100 text-green-700'
                         }`}
                       >
-                        {record.status}
+                        {record.status || (record.overcrowded ? 'Overcrowded' : 'Normal')}
                       </span>
                     </td>
                   </tr>

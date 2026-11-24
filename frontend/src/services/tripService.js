@@ -1,14 +1,21 @@
-
 import api from './api'
 
-// Get all trips
 export const getTrips = async () => {
   const response = await api.get('/trips')
-  return response.data
+  return response.data?.data !== undefined ? response.data.data : response.data
 }
 
-// Create a new trip
 export const addTrip = async (tripData) => {
   const response = await api.post('/trips', tripData)
-  return response.data
+  return response.data?.data !== undefined ? response.data.data : response.data
+}
+
+export const updateTrip = async (id, tripData) => {
+  const response = await api.put(`/trips/${id}`, tripData)
+  return response.data?.data !== undefined ? response.data.data : response.data
+}
+
+export const deleteTrip = async (id) => {
+  const response = await api.delete(`/trips/${id}`)
+  return response.data?.data !== undefined ? response.data.data : response.data
 }

@@ -5,32 +5,68 @@
 
 const { pool } = require('../config/db');
 
+function formatPassengerRecord(rec, busNumber, busCapacity) {
+    const count = rec.passenger_count;
+    const capacity = busCapacity || 50;
+    const isOvercrowded = count > capacity;
+    const occupancyPct = capacity > 0 ? Number(((count / capacity) * 100).toFixed(1)) : 0;
+
+    return {
+        ...rec,
+        id: rec.record_id,
+        bus: busNumber,
+        count: count,
+        capacity: capacity,
+        occupancy: occupancyPct,
+        status: isOvercrowded ? 'Overcrowded' : 'Normal',
+        bus_capacity: capacity,
+        occupancy_percentage: occupancyPct,
+        overcrowded: isOvercrowded
+    };
+}
+
 /**
- * GET /api/passengers/trip/:tripId
- * Retrieve all point-in-time passenger occupancy snapshots for a specific trip
+ * GET /api/passengers/:tripId
+ * Retrieve all point-in-time passenger occupancy snapshots for a trip (or bus number)
  */
 async function getPassengerRecordsByTrip(req, res, next) {
     try {
-        const tripId = Number(req.params.tripId);
-        if (!Number.isInteger(tripId) || tripId <= 0) {
-            return res.status(400).json({ success: false, message: 'Invalid trip ID.' });
+        let tripParam = req.params.tripId;
+        let tripId = Number(tripParam);
+
+        let tripRows;
+        if (Number.isInteger(tripId) && tripId > 0) {
+            [tripRows] = await pool.query(`
+                SELECT t.trip_id, t.trip_date, b.bus_number, b.capacity AS bus_capacity
+                FROM Trip t
+                INNER JOIN Bus b ON t.bus_id = b.bus_id
+                WHERE t.trip_id = ?
+            `, [tripId]);
+        } else {
+            // Check if tripParam was a bus number e.g. 'KA-19-1234'
+            [tripRows] = await pool.query(`
+                SELECT t.trip_id, t.trip_date, b.bus_number, b.capacity AS bus_capacity
+                FROM Trip t
+                INNER JOIN Bus b ON t.bus_id = b.bus_id
+                WHERE b.bus_number = ?
+                ORDER BY t.trip_id DESC LIMIT 1
+            `, [tripParam]);
         }
 
-        // Verify trip existence and retrieve bus capacity
-        const [tripRows] = await pool.query(`
-            SELECT t.trip_id, t.trip_date, b.bus_number, b.capacity AS bus_capacity
-            FROM Trip t
-            INNER JOIN Bus b ON t.bus_id = b.bus_id
-            WHERE t.trip_id = ?
-        `, [tripId]);
-
-        if (tripRows.length === 0) {
-            return res.status(404).json({ success: false, message: `Trip with ID ${tripId} not found.` });
+        if (!tripRows || tripRows.length === 0) {
+            // Return empty list gracefully if trip not yet started
+            return res.status(200).json({
+                success: true,
+                message: 'No records found for specified trip/bus.',
+                data: []
+            });
         }
 
-        const busCapacity = tripRows[0].bus_capacity;
+        const activeTrip = tripRows[0];
+        tripId = activeTrip.trip_id;
+        const busCapacity = activeTrip.bus_capacity;
+        const busNumber = activeTrip.bus_number;
 
-        // Fetch passenger records ordered chronologically
         const [records] = await pool.query(`
             SELECT 
                 record_id,
@@ -41,27 +77,15 @@ async function getPassengerRecordsByTrip(req, res, next) {
                 recorded_at
             FROM Passenger_Record
             WHERE trip_id = ?
-            ORDER BY recorded_at ASC, record_id ASC
+            ORDER BY recorded_at DESC, record_id DESC
         `, [tripId]);
 
-        // Enrich records with calculated occupancy percentage and overcrowding indicator
-        const enrichedRecords = records.map(rec => {
-            const occupancyPct = busCapacity > 0 ? Number(((rec.passenger_count / busCapacity) * 100).toFixed(2)) : 0;
-            return {
-                ...rec,
-                bus_capacity: busCapacity,
-                occupancy_percentage: occupancyPct,
-                overcrowded: rec.passenger_count > busCapacity
-            };
-        });
+        const formatted = records.map(r => formatPassengerRecord(r, busNumber, busCapacity));
 
         res.status(200).json({
             success: true,
             message: `Passenger records for Trip #${tripId} retrieved successfully.`,
-            data: {
-                trip: tripRows[0],
-                records: enrichedRecords
-            }
+            data: formatted
         });
     } catch (error) {
         next(error);
@@ -71,32 +95,43 @@ async function getPassengerRecordsByTrip(req, res, next) {
 /**
  * POST /api/passengers
  * Record a point-in-time passenger count snapshot during a trip.
- * 
- * IMPORTANT DESIGN CONTRACT:
- * - passenger_count represents the total number of passengers currently on the bus.
- * - This endpoint inserts into Passenger_Record.
- * - The MySQL Trigger 'trg_passenger_overcrowding' automatically executes in the database
- *   to generate a Safety_Incident alert if passenger_count > bus capacity.
  */
 async function recordPassengerCount(req, res, next) {
     try {
-        const { trip_id, boarding_stop, exit_stop, passenger_count } = req.body;
+        let { trip_id, bus, boarding_stop, exit_stop, passenger_count, count } = req.body;
 
-        const numTripId = Number(trip_id);
-        if (!numTripId || numTripId <= 0) {
-            return res.status(400).json({ success: false, message: 'Validation error: valid trip_id is required.' });
-        }
-
-        if (!boarding_stop || typeof boarding_stop !== 'string' || boarding_stop.trim() === '') {
-            return res.status(400).json({ success: false, message: 'Validation error: boarding_stop is required.' });
-        }
-
-        const numCount = Number(passenger_count);
+        const inputCount = passenger_count !== undefined ? passenger_count : count;
+        const numCount = Number(inputCount);
         if (!Number.isInteger(numCount) || numCount < 0) {
             return res.status(400).json({
                 success: false,
                 message: 'Validation error: passenger_count must be a non-negative integer (0 or greater).'
             });
+        }
+
+        // Resolve trip_id
+        let resolvedTripId = Number(trip_id);
+        const busIdentifier = bus || trip_id;
+
+        if (!resolvedTripId || resolvedTripId <= 0) {
+            if (busIdentifier) {
+                // Find latest trip for this bus
+                const [matchedTrips] = await pool.query(`
+                    SELECT t.trip_id, b.bus_number, b.capacity AS bus_capacity
+                    FROM Trip t
+                    INNER JOIN Bus b ON t.bus_id = b.bus_id
+                    WHERE b.bus_number = ? OR t.trip_id = ?
+                    ORDER BY t.trip_id DESC LIMIT 1
+                `, [busIdentifier, busIdentifier]);
+
+                if (matchedTrips.length > 0) {
+                    resolvedTripId = matchedTrips[0].trip_id;
+                }
+            }
+        }
+
+        if (!resolvedTripId) {
+            return res.status(400).json({ success: false, message: 'Validation error: valid trip_id or bus is required.' });
         }
 
         // Verify Trip exists and retrieve assigned Bus capacity
@@ -105,44 +140,37 @@ async function recordPassengerCount(req, res, next) {
             FROM Trip t
             INNER JOIN Bus b ON t.bus_id = b.bus_id
             WHERE t.trip_id = ?
-        `, [numTripId]);
+        `, [resolvedTripId]);
 
         if (tripInfo.length === 0) {
-            return res.status(404).json({ success: false, message: `Trip with ID ${numTripId} does not exist.` });
+            return res.status(404).json({ success: false, message: `Trip with ID ${resolvedTripId} does not exist.` });
         }
 
         const busCapacity = tripInfo[0].bus_capacity;
+        const busNumber = tripInfo[0].bus_number;
+        const stopName = (boarding_stop && boarding_stop.trim()) || 'Current Stop';
 
-        // Insert into Passenger_Record.
-        // NOTE: The MySQL trigger `trg_passenger_overcrowding` fires AFTER INSERT ON Passenger_Record
+        // Insert into Passenger_Record. MySQL trigger 'trg_passenger_overcrowding' fires automatically!
         const [insertResult] = await pool.query(`
             INSERT INTO Passenger_Record (trip_id, boarding_stop, exit_stop, passenger_count, recorded_at)
             VALUES (?, ?, ?, ?, NOW())
-        `, [numTripId, boarding_stop.trim(), exit_stop ? exit_stop.trim() : null, numCount]);
+        `, [resolvedTripId, stopName, exit_stop ? exit_stop.trim() : null, numCount]);
 
         const newRecordId = insertResult.insertId;
 
-        // Fetch inserted record
         const [savedRows] = await pool.query(
             'SELECT record_id, trip_id, boarding_stop, exit_stop, passenger_count, recorded_at FROM Passenger_Record WHERE record_id = ?',
             [newRecordId]
         );
 
-        // Occupancy calculation formula
-        const occupancyPercentage = busCapacity > 0 ? Number(((numCount / busCapacity) * 100).toFixed(2)) : 0;
-        const isOvercrowded = numCount > busCapacity;
+        const formatted = formatPassengerRecord(savedRows[0], busNumber, busCapacity);
 
         res.status(201).json({
             success: true,
-            message: isOvercrowded 
+            message: formatted.overcrowded 
                 ? `Passenger snapshot recorded. WARNING: Overcrowding detected (${numCount}/${busCapacity}). Automated safety alert evaluated by database trigger.`
                 : 'Passenger snapshot recorded successfully within bus capacity limits.',
-            data: {
-                ...savedRows[0],
-                bus_capacity: busCapacity,
-                occupancy_percentage: occupancyPercentage,
-                overcrowded: isOvercrowded
-            }
+            data: formatted
         });
     } catch (error) {
         next(error);
