@@ -1,0 +1,31 @@
+{
+  "name": "smart-bus-safety-backend",
+  "version": "1.0.0",
+  "description": "Backend API for Smart Bus Overcrowding & Passenger Safety Management System",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js",
+    "test": "node tests/static-check.js",
+    "test:probe": "node tests/server-probe.js"
+  },
+  "keywords": [
+    "express",
+    "mysql",
+    "bus-safety",
+    "overcrowding-detection",
+    "dbms-project"
+  ],
+  "author": "Member A (Database Engineer & Backend Developer)",
+  "license": "ISC",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "morgan": "^1.10.0",
+    "mysql2": "^3.12.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.9"
+  }
+}
